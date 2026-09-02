@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   useEvaluateRealDatasetImageMutation,
@@ -45,7 +45,7 @@ function colorForLabel(label: string): string {
 const AGENT_HIGHLIGHT_PATTERN =
   /(\d+(?:[.,]\d+)?\s?%|x:?\s?\d+\s?[–-]\s?\d+,\s?y:?\s?\d+\s?[–-]\s?\d+(?:\s?\(theo pixel\))?)/g;
 
-function highlightAgentText(text: string): Array<string | JSX.Element> {
+function highlightAgentText(text: string): ReactNode[] {
   return text.split(AGENT_HIGHLIGHT_PATTERN).map((part, index) => {
     if (index % 2 === 0) return part;
     const isConfidence = /%\s*$/.test(part);
