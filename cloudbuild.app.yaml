@@ -1,9 +1,20 @@
 steps:
+  # Cloud Build workers are ephemeral. Pull the previous image so unchanged
+  # Docker layers can be reused instead of reinstalling dependencies every run.
+  - name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - docker pull asia-southeast1-docker.pkg.dev/ai-lab-16-gcp-505508/label-guardian/app:latest || true
   - name: gcr.io/cloud-builders/docker
     env:
       - DOCKER_BUILDKIT=1
     args:
       - build
+      - --cache-from
+      - asia-southeast1-docker.pkg.dev/ai-lab-16-gcp-505508/label-guardian/app:latest
+      - --build-arg
+      - BUILDKIT_INLINE_CACHE=1
       - -f
       - Dockerfile
       - -t
