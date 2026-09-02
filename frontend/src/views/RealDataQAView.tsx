@@ -5,6 +5,7 @@ import {
   useRealDatasetFrameSamplesQuery,
 } from "../api/queries";
 import type {
+  RealDatasetEvaluationDto,
   RealDatasetImageDto,
   RealDatasetLabelDto,
   RealDatasetPredictionDto,
@@ -43,6 +44,24 @@ function displayedLabelCount(image: RealDatasetImageDto): number {
   return image.labels.filter((label) =>
     apiBoxIntersectsImage(label.bbox, image.width, image.height),
   ).length;
+}
+
+function evaluationKeyForImage(image: RealDatasetImageDto): string {
+  return [
+    image.dataset ?? "dataset",
+    image.release ?? "release",
+    image.split,
+    image.id,
+  ].join(":");
+}
+
+function evaluationKeyForResult(evaluation: RealDatasetEvaluationDto): string {
+  return [
+    evaluation.datasetId,
+    evaluation.datasetVersion,
+    evaluation.image.split,
+    evaluation.image.id,
+  ].join(":");
 }
 
 function AnnotationBox({ label }: { label: RealDatasetLabelDto }) {
@@ -127,6 +146,9 @@ export function RealDataQAView() {
   const [selectedSequence, setSelectedSequence] = useState<string>("all");
   const [offset, setOffset] = useState(0);
   const [selectedId, setSelectedId] = useState<string>();
+  const [evaluationsByImageKey, setEvaluationsByImageKey] = useState<
+    Record<string, RealDatasetEvaluationDto>
+  >({});
   const [comparisonMode, setComparisonMode] = useState<
     "gt" | "prediction" | "both"
   >("both");
@@ -160,6 +182,14 @@ export function RealDataQAView() {
     () => samples.flatMap((sample) => sample.cameras),
     [samples],
   );
+
+  useEffect(() => {
+    if (!evaluation.data) return;
+    setEvaluationsByImageKey((previous) => ({
+      ...previous,
+      [evaluationKeyForResult(evaluation.data)]: evaluation.data,
+    }));
+  }, [evaluation.data]);
 
   useEffect(() => {
     if (!images.some((image) => image.id === selectedId)) {
@@ -205,7 +235,11 @@ export function RealDataQAView() {
       ) ?? [],
     [selected],
   );
-  const report = reportForSelectedImage(evaluation.data, selected?.id);
+  const selectedEvaluation = selected
+    ? evaluationsByImageKey[evaluationKeyForImage(selected)]
+    : undefined;
+  const selectedPredictions = selectedEvaluation?.predictions ?? [];
+  const report = reportForSelectedImage(selectedEvaluation, selected?.id);
   const lastPage = samplesQuery.data ? offset + PAGE_SIZE >= samplesQuery.data.count : true;
   const datasetOptions = samplesQuery.data?.availableDatasets.length
     ? samplesQuery.data.availableDatasets
@@ -442,7 +476,7 @@ export function RealDataQAView() {
                       GT · {displayedLabels.length}/{selected.labelCount}
                     </Badge>
                     <Badge tone="info">
-                      YOLO · {evaluation.data?.predictions.length ?? 0}
+                      YOLO · {selectedPredictions.length}
                     </Badge>
                     <span>
                       {selected.width} × {selected.height}
@@ -467,7 +501,7 @@ export function RealDataQAView() {
                       ))
                     : null}
                   {comparisonMode !== "gt"
-                    ? evaluation.data?.predictions.map((prediction) => (
+                    ? selectedPredictions.map((prediction) => (
                         <PredictionBox
                           key={prediction.id}
                           prediction={prediction}
@@ -544,14 +578,14 @@ export function RealDataQAView() {
                   >
                     {report.status}
                   </Badge>
-                  {evaluation.data?.cached ? (
+                  {selectedEvaluation?.cached ? (
                     <span>Cached</span>
                   ) : (
                     <span>Fresh inference</span>
                   )}
-                  {evaluation.data?.persisted ? (
+                  {selectedEvaluation?.persisted ? (
                     <span>
-                      {t("Persisted", "Đã lưu")} · {evaluation.data.createdCaseIds.length} QA cases
+                      {t("Persisted", "Đã lưu")} · {selectedEvaluation.createdCaseIds.length} QA cases
                     </span>
                   ) : null}
                 </div>
