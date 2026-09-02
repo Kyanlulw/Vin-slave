@@ -34,6 +34,8 @@ const priorityRank: Record<Severity, number> = {
 };
 const EMPTY_CASES: QaCaseDto[] = [];
 const PAGE_SIZE = 10;
+const DEFAULT_QA_QUEUE_DATASET = "nuscenes";
+const DEFAULT_QA_QUEUE_SPLIT = "smoke";
 
 function evidenceLines(qaCase: QaCaseDto): string[] {
   const lines: string[] = [];
@@ -73,8 +75,8 @@ export function ApiQAQueueView({
   const [searchParameters, setSearchParameters] = useSearchParams();
   const auth = useAuth();
   const canReview = auth.user?.role === "reviewer" || auth.user?.role === "admin";
-  const scopedDataset = searchParameters.get("dataset") ?? "nuscenes";
-  const scopedSplit = searchParameters.get("split") ?? import.meta.env.VITE_DATASET_DEFAULT_SPLIT ?? "product";
+  const scopedDataset = searchParameters.get("dataset") ?? DEFAULT_QA_QUEUE_DATASET;
+  const scopedSplit = searchParameters.get("split") ?? DEFAULT_QA_QUEUE_SPLIT;
   const scopedImageId = searchParameters.get("imageId") ?? undefined;
   const casesQuery = useQaCasesQuery({
     split: scopedSplit,
@@ -130,6 +132,13 @@ export function ApiQAQueueView({
   }, [filteredExplorerSamples, selectedFrameId]);
 
   const [decisionMessage, setDecisionMessage] = useState("");
+
+  const setDatasetScope = useCallback(
+    (dataset: string) => {
+      setSearchParameters({ dataset, split: DEFAULT_QA_QUEUE_SPLIT });
+    },
+    [setSearchParameters],
+  );
 
   const sequenceOptions = useMemo(
     () => [...new Set(cases.map((qaCase) => qaCase.sequenceId))].sort(),
@@ -215,6 +224,12 @@ export function ApiQAQueueView({
       setSelectedCaseId(visibleCases[0]?.id ?? "");
     }
   }, [selectedCaseId, visibleCases]);
+
+  useEffect(() => {
+    if (!casesQuery.isPending && cases.length === 0 && allSamples.length > 0) {
+      setActiveTab("frames");
+    }
+  }, [allSamples.length, cases.length, casesQuery.isPending]);
 
   const selectedCase = visibleCases.find(
     (qaCase) => qaCase.id === selectedCaseId,
@@ -316,7 +331,7 @@ export function ApiQAQueueView({
     setSearchParameters(dataset ? { dataset } : {}, { replace: true });
   }, [searchParameters, setSearchParameters]);
 
-  if (casesQuery.isPending && cases.length === 0) {
+  if (casesQuery.isPending && allSamplesQuery.isPending && cases.length === 0) {
     return (
       <QueuePageState
         title="Đang tải QA Cases"
@@ -325,7 +340,7 @@ export function ApiQAQueueView({
     );
   }
 
-  if (error && cases.length === 0) {
+  if (error && cases.length === 0 && allSamples.length === 0) {
     return (
       <QueuePageState
         title="Không thể kết nối backend"
@@ -340,7 +355,12 @@ export function ApiQAQueueView({
     );
   }
 
-  if (!casesQuery.isPending && cases.length === 0) {
+  if (
+    !casesQuery.isPending &&
+    !allSamplesQuery.isPending &&
+    cases.length === 0 &&
+    allSamples.length === 0
+  ) {
     return (
       <QueuePageState
         title={scopedImageId ? "Ảnh này chưa có QA Case" : "Chưa có QA Cases"}
@@ -397,7 +417,7 @@ export function ApiQAQueueView({
         <div className="queue-dataset-selector">
           <select
             value={scopedDataset}
-            onChange={(event) => setSearchParameters({ dataset: event.target.value, split: "product" })}
+            onChange={(event) => setDatasetScope(event.target.value)}
             aria-label="Chọn dataset"
           >
             <option value="nuscenes">nuScenes</option>
@@ -591,7 +611,7 @@ export function ApiQAQueueView({
               <span>Dataset</span>
               <select
                 value={scopedDataset}
-                onChange={(event) => setSearchParameters({ dataset: event.target.value, split: "product" })}
+                onChange={(event) => setDatasetScope(event.target.value)}
               >
                 <option value="nuscenes">nuScenes</option>
                 <option value="kitti">KITTI</option>
