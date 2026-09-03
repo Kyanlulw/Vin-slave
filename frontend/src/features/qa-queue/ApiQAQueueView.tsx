@@ -35,7 +35,7 @@ const priorityRank: Record<Severity, number> = {
 const EMPTY_CASES: QaCaseDto[] = [];
 const PAGE_SIZE = 10;
 const DEFAULT_QA_QUEUE_DATASET = "nuscenes";
-const DEFAULT_QA_QUEUE_SPLIT = "smoke";
+const DEFAULT_QA_QUEUE_SPLIT = "product";
 
 function evidenceLines(qaCase: QaCaseDto): string[] {
   const lines: string[] = [];
