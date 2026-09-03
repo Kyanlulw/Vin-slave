@@ -9,6 +9,7 @@ import os
 import uuid
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Annotated, cast
@@ -25,7 +26,7 @@ from src.api.dependencies import get_current_user, get_db_session, get_real_data
 from src.config import IngestionSettings
 from src.models.admin_control import FrameTask
 from src.models.auth_schemas import AuthenticatedUser
-from src.models.inference_schemas import InferenceImageReference
+from src.models.inference_schemas import InferenceBatchRequest, InferenceImageReference, InferenceResponse
 from src.models.ingestion import QAImage, QAObject
 from src.models.real_dataset_schemas import (
     AnnotationDocument,
@@ -33,6 +34,9 @@ from src.models.real_dataset_schemas import (
     AnnotationRevisionList,
     AnnotationSaveRequest,
     RealDatasetBBox,
+    RealDatasetBatchEvaluation,
+    RealDatasetBatchEvaluationRequest,
+    RealDatasetBatchEvaluationResult,
     RealDatasetEvaluation,
     RealDatasetFrameSample,
     RealDatasetFrameSampleList,
@@ -49,6 +53,16 @@ from src.services.real_dataset_service import RealDatasetService
 logger = logging.getLogger(__name__)
 
 _process_gcs_client = None
+
+
+@dataclass(frozen=True)
+class _EvaluationInput:
+    image_id: str
+    image: RealDatasetImage
+    image_payload: bytes | None
+    image_reference: InferenceImageReference | None
+    revision: int
+
 
 def _get_process_gcs_client():
     global _process_gcs_client
@@ -1256,6 +1270,58 @@ async def get_real_dataset_pointcloud_content(
         raise _not_found(error) from error
 
 
+async def _prepare_evaluation_input(
+    session: AsyncSession,
+    service: RealDatasetService,
+    split: str,
+    image_id: str,
+) -> _EvaluationInput:
+    image_payload: bytes | None = None
+    image_reference: InferenceImageReference | None = None
+    if service.dataset_backend == "database":
+        image_row = await _get_database_image_row(session, service, image_id, split=split)
+        effective_image = await _get_database_image(session, service, image_id, split=split)
+        if service.uses_remote_inference:
+            bucket, object_key = _bucket_and_key(image_row)
+            dataset_id, dataset_version = _image_dataset_release(service, effective_image)
+            image_reference = InferenceImageReference(
+                dataset_id=dataset_id,
+                dataset_version=dataset_version,
+                split=split,
+                image_id=image_id,
+                bucket=bucket,
+                object_key=object_key,
+            )
+        else:
+            image_payload, _ = await asyncio.to_thread(_download_gcs_image, image_row)
+    else:
+        base_image = service.get_image(split, image_id)
+        effective_image = (
+            await AnnotationEditorService.document(
+                session,
+                image=base_image,
+                dataset_id=service.dataset_id,
+                dataset_version=service.dataset_version,
+            )
+        ).image
+
+    dataset_id, dataset_version = _image_dataset_release(service, effective_image)
+    latest = await AnnotationEditorService.latest_revision(
+        session,
+        dataset_id=dataset_id,
+        dataset_version=dataset_version,
+        split=split,
+        image_id=image_id,
+    )
+    return _EvaluationInput(
+        image_id=image_id,
+        image=effective_image,
+        image_payload=image_payload,
+        image_reference=image_reference,
+        revision=latest.version if latest else 0,
+    )
+
+
 @router.post("/images/{split}/{image_id}/evaluate", response_model=RealDatasetEvaluation)
 async def evaluate_real_dataset_image(
     split: str,
@@ -1268,50 +1334,15 @@ async def evaluate_real_dataset_image(
     session: AsyncSession = Depends(get_db_session),
 ) -> RealDatasetEvaluation:
     try:
-        image_payload: bytes | None = None
-        image_reference: InferenceImageReference | None = None
-        if service.dataset_backend == "database":
-            image_row = await _get_database_image_row(session, service, image_id, split=split)
-            effective_image = await _get_database_image(session, service, image_id, split=split)
-            if service.uses_remote_inference:
-                bucket, object_key = _bucket_and_key(image_row)
-                dataset_id, dataset_version = _image_dataset_release(service, effective_image)
-                image_reference = InferenceImageReference(
-                    dataset_id=dataset_id,
-                    dataset_version=dataset_version,
-                    split=split,
-                    image_id=image_id,
-                    bucket=bucket,
-                    object_key=object_key,
-                )
-            else:
-                image_payload, _ = await asyncio.to_thread(_download_gcs_image, image_row)
-        else:
-            base_image = service.get_image(split, image_id)
-            effective_image = (
-                await AnnotationEditorService.document(
-                    session,
-                    image=base_image,
-                    dataset_id=service.dataset_id,
-                    dataset_version=service.dataset_version,
-                )
-            ).image
-        dataset_id, dataset_version = _image_dataset_release(service, effective_image)
-        latest = await AnnotationEditorService.latest_revision(
-            session,
-            dataset_id=dataset_id,
-            dataset_version=dataset_version,
-            split=split,
-            image_id=image_id,
-        )
+        prepared = await _prepare_evaluation_input(session, service, split, image_id)
         evaluation = await service.evaluate(
             split,
             image_id,
             force=force,
-            image_override=effective_image,
-            image_payload=image_payload,
-            image_reference=image_reference,
-            revision=latest.version if latest else 0,
+            image_override=prepared.image,
+            image_payload=prepared.image_payload,
+            image_reference=prepared.image_reference,
+            revision=prepared.revision,
         )
         if not persist:
             return evaluation
@@ -1321,6 +1352,122 @@ async def evaluate_real_dataset_image(
         return evaluation
     except (FileNotFoundError, YoloDatasetLayoutError) as error:
         raise _not_found(error) from error
+
+
+@router.post("/images/{split}/evaluate-batch", response_model=RealDatasetBatchEvaluation)
+async def evaluate_real_dataset_images_batch(
+    split: str,
+    request: RealDatasetBatchEvaluationRequest,
+    service: Annotated[RealDatasetService, Depends(get_real_dataset_service)],
+    background_tasks: BackgroundTasks,
+    _operator: Annotated[AuthenticatedUser, Depends(require_roles("reviewer", "admin"))],
+    session: AsyncSession = Depends(get_db_session),
+) -> RealDatasetBatchEvaluation:
+    del background_tasks
+    qa_service = RealDatasetQaService()
+    prepared_inputs: list[_EvaluationInput] = []
+    results: list[RealDatasetBatchEvaluationResult] = []
+    for image_id in request.image_ids:
+        try:
+            prepared_inputs.append(await _prepare_evaluation_input(session, service, split, image_id))
+        except HTTPException as error:
+            results.append(RealDatasetBatchEvaluationResult(image_id=image_id, error=str(error.detail)))
+        except (FileNotFoundError, YoloDatasetLayoutError) as error:
+            results.append(RealDatasetBatchEvaluationResult(image_id=image_id, error=str(error)))
+
+    inference_responses: dict[str, InferenceResponse] = {}
+    inference_errors: dict[str, str] = {}
+    inference_batch_used = False
+    batch_client = (
+        service.inference_client
+        if service.inference_client is not None
+        and hasattr(service.inference_client, "detect_batch")
+        else None
+    )
+    remote_inputs = [item for item in prepared_inputs if item.image_reference is not None]
+    if batch_client is not None and len(remote_inputs) == len(prepared_inputs):
+        batch_size = 64
+        for start in range(0, len(remote_inputs), batch_size):
+            chunk = remote_inputs[start:start + batch_size]
+            try:
+                batch_response = await batch_client.detect_batch(
+                    InferenceBatchRequest(
+                        images=[
+                            item.image_reference
+                            for item in chunk
+                            if item.image_reference is not None
+                        ]
+                    )
+                )
+            except Exception as error:
+                for item in chunk:
+                    inference_errors[item.image_id] = f"Batch inference failed: {error}"
+                continue
+            inference_batch_used = True
+            for item in batch_response.results:
+                if item.error:
+                    inference_errors[item.image.image_id] = item.error
+                    continue
+                inference_responses[item.image.image_id] = InferenceResponse(
+                    model_name=batch_response.model_name,
+                    model_version=batch_response.model_version,
+                    detections=item.detections,
+                    raw_risk_score=item.raw_risk_score,
+                    latency_ms=item.latency_ms,
+                    metadata={
+                        **item.metadata,
+                        "batch_latency_ms": batch_response.latency_ms,
+                        "batch_metadata": batch_response.metadata,
+                    },
+                )
+
+    for item in prepared_inputs:
+        if item.image_id in inference_errors:
+            results.append(
+                RealDatasetBatchEvaluationResult(
+                    image_id=item.image_id,
+                    error=inference_errors[item.image_id],
+                )
+            )
+            continue
+        try:
+            evaluation = await service.evaluate(
+                split,
+                item.image_id,
+                force=request.force,
+                image_override=item.image,
+                image_payload=item.image_payload,
+                image_reference=item.image_reference,
+                inference_response=inference_responses.get(item.image_id),
+                revision=item.revision,
+            )
+            if request.persist:
+                case_ids = await qa_service.persist(session, evaluation)
+                evaluation.persisted = True
+                evaluation.created_case_ids = case_ids
+            results.append(
+                RealDatasetBatchEvaluationResult(
+                    image_id=item.image_id,
+                    evaluation=evaluation,
+                )
+            )
+        except Exception as error:
+            results.append(
+                RealDatasetBatchEvaluationResult(
+                    image_id=item.image_id,
+                    error=str(error),
+                )
+            )
+
+    succeeded = sum(1 for result in results if result.evaluation is not None)
+    failed = len(results) - succeeded
+    return RealDatasetBatchEvaluation(
+        count=len(results),
+        succeeded=succeeded,
+        failed=failed,
+        inference_batch_used=inference_batch_used,
+        results=results,
+    )
 
 
 async def _base_editor_image(

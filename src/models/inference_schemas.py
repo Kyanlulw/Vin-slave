@@ -32,6 +32,11 @@ class InferenceRequest(ApiModel):
     mode: Literal["yolo"] = "yolo"
 
 
+class InferenceBatchRequest(ApiModel):
+    images: list[InferenceImageReference] = Field(min_length=1)
+    mode: Literal["yolo"] = "yolo"
+
+
 class InferenceDetection(ApiModel):
     class_name: str = Field(min_length=1)
     bbox: RealDatasetBBox
@@ -43,5 +48,22 @@ class InferenceResponse(ApiModel):
     model_version: str
     detections: list[InferenceDetection]
     raw_risk_score: float | None = Field(default=None, ge=0.0, le=100.0)
+    latency_ms: dict[str, float | None] = Field(default_factory=dict)
+    metadata: dict = Field(default_factory=dict)
+
+
+class InferenceBatchItemResponse(ApiModel):
+    image: InferenceImageReference
+    detections: list[InferenceDetection]
+    raw_risk_score: float | None = Field(default=None, ge=0.0, le=100.0)
+    latency_ms: dict[str, float | None] = Field(default_factory=dict)
+    metadata: dict = Field(default_factory=dict)
+    error: str | None = None
+
+
+class InferenceBatchResponse(ApiModel):
+    model_name: str
+    model_version: str
+    results: list[InferenceBatchItemResponse]
     latency_ms: dict[str, float | None] = Field(default_factory=dict)
     metadata: dict = Field(default_factory=dict)

@@ -4,7 +4,12 @@ from typing import Protocol, cast
 
 import httpx
 
-from src.models.inference_schemas import InferenceRequest, InferenceResponse
+from src.models.inference_schemas import (
+    InferenceBatchRequest,
+    InferenceBatchResponse,
+    InferenceRequest,
+    InferenceResponse,
+)
 
 INFERENCE_AUTH_HEADER = "X-Label-Guardian-Inference-Token"
 
@@ -15,6 +20,7 @@ class InferenceClientError(RuntimeError):
 
 class InferenceClient(Protocol):
     async def detect(self, request: InferenceRequest) -> InferenceResponse: ...
+    async def detect_batch(self, request: InferenceBatchRequest) -> InferenceBatchResponse: ...
 
 
 class RemoteInferenceClient:
@@ -26,15 +32,16 @@ class RemoteInferenceClient:
         timeout_seconds: float = 30.0,
     ) -> None:
         self.endpoint = f"{base_url.rstrip('/')}/v1/detect"
+        self.batch_endpoint = f"{base_url.rstrip('/')}/v1/detect-batch"
         self.token = token
         self.timeout = httpx.Timeout(timeout_seconds)
 
-    async def detect(self, request: InferenceRequest) -> InferenceResponse:
+    async def _post(self, endpoint: str, request: InferenceRequest | InferenceBatchRequest) -> object:
         headers = {INFERENCE_AUTH_HEADER: self.token} if self.token else None
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
-                    self.endpoint,
+                    endpoint,
                     headers=headers,
                     json=request.model_dump(mode="json", by_alias=True, exclude_none=True),
                 )
@@ -56,7 +63,14 @@ class RemoteInferenceClient:
             )
 
         try:
-            response_payload: object = response.json()
-            return cast(InferenceResponse, InferenceResponse.model_validate(response_payload))
+            return response.json()
         except ValueError as error:
             raise InferenceClientError("Inference service returned an invalid response contract.") from error
+
+    async def detect(self, request: InferenceRequest) -> InferenceResponse:
+        response_payload = await self._post(self.endpoint, request)
+        return cast(InferenceResponse, InferenceResponse.model_validate(response_payload))
+
+    async def detect_batch(self, request: InferenceBatchRequest) -> InferenceBatchResponse:
+        response_payload = await self._post(self.batch_endpoint, request)
+        return cast(InferenceBatchResponse, InferenceBatchResponse.model_validate(response_payload))

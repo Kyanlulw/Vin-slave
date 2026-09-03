@@ -131,6 +131,31 @@ export function useEvaluateRealDatasetImageMutation() {
   });
 }
 
+export function useEvaluateRealDatasetBatchMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      split,
+      imageIds,
+      force = false,
+      persist = true,
+    }: {
+      split: string;
+      imageIds: string[];
+      force?: boolean;
+      persist?: boolean;
+    }) =>
+      labelGuardianApiV1.evaluateRealDatasetImagesBatch(
+        split,
+        imageIds,
+        force,
+        persist,
+      ),
+    onSuccess: async () =>
+      queryClient.invalidateQueries({ queryKey: apiQueryKeys.qaCases }),
+  });
+}
+
 export function useQaCaseStatusMutation() {
   const queryClient = useQueryClient();
   return useMutation({

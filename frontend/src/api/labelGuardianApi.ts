@@ -12,6 +12,7 @@ import type {
   PipelineRunListDto,
   QaCaseDto,
   QaCaseListDto,
+  RealDatasetBatchEvaluationDto,
   RealDatasetEvaluationDto,
   RealDatasetFrameSampleListDto,
   RealDatasetImageListDto,
@@ -240,6 +241,21 @@ export const labelGuardianApiV1 = {
       `${API_V1_PREFIX}/dataset/images/${encodeURIComponent(split)}/${encodeURIComponent(imageId)}/evaluate?${parameters}`,
       signal,
       "POST",
+    );
+  },
+
+  evaluateRealDatasetImagesBatch(
+    split: string,
+    imageIds: string[],
+    force = false,
+    persist = true,
+    signal?: AbortSignal,
+  ): Promise<RealDatasetBatchEvaluationDto> {
+    return requestJson<RealDatasetBatchEvaluationDto>(
+      `${API_V1_PREFIX}/dataset/images/${encodeURIComponent(split)}/evaluate-batch`,
+      signal,
+      "POST",
+      { imageIds, force, persist },
     );
   },
 

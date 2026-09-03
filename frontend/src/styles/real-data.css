@@ -45,6 +45,7 @@
 .real-data-legend span { display: inline-flex; align-items: center; gap: 5px; }
 .real-data-legend i { width: 10px; height: 10px; border-radius: 2px; }
 .real-data-agent-header { padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.real-data-agent-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .real-data-agent-empty, .real-data-agent-error, .real-data-state { padding: 24px; text-align: center; color: var(--muted); }
 .real-data-agent-error, .real-data-state.is-error { margin-top: 12px; border-radius: 9px; color: #991b1b; background: #fef2f2; }
 .real-data-report { padding-top: 14px; }

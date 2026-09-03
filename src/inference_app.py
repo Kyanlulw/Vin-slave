@@ -18,7 +18,15 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 from PIL import Image
 
 from src.config import InferenceServiceSettings, IngestionSettings
-from src.models.inference_schemas import InferenceDetection, InferenceRequest, InferenceResponse
+from src.models.inference_schemas import (
+    InferenceBatchItemResponse,
+    InferenceBatchRequest,
+    InferenceBatchResponse,
+    InferenceDetection,
+    InferenceImageReference,
+    InferenceRequest,
+    InferenceResponse,
+)
 from src.models.real_dataset_schemas import RealDatasetBBox
 from src.services.google_cloud import create_gcs_storage_client
 from src.services.inference_client import INFERENCE_AUTH_HEADER
@@ -72,12 +80,13 @@ def _download_gcs_bytes(
     bucket_name: str,
     object_key: str,
     settings: IngestionSettings,
+    client: Any | None = None,
 ) -> tuple[bytes, str]:
-    client = create_gcs_storage_client(settings)
-    blob = client.bucket(bucket_name).blob(object_key)
+    storage_client = client or create_gcs_storage_client(settings)
+    blob = storage_client.bucket(bucket_name).blob(object_key)
     try:
-        blob.reload(client=client)
-        return blob.download_as_bytes(client=client), blob.content_type or "application/octet-stream"
+        blob.reload(client=storage_client)
+        return blob.download_as_bytes(client=storage_client), blob.content_type or "application/octet-stream"
     except Exception as error:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -127,12 +136,11 @@ def _resolve_model_name(
     return str(cache_path)
 
 
-def _run_yolo(
-    image_bytes: bytes,
+def _prepare_yolo_runtime(
     *,
     settings: InferenceServiceSettings,
     storage_settings: IngestionSettings,
-) -> tuple[list[InferenceDetection], dict[str, float | None], dict[str, Any]]:
+) -> tuple[Any, dict[str, Any], dict[str, Any], float]:
     metadata: dict[str, Any] = {}
     model_load_start = perf_counter()
     resolved_model_name = _resolve_model_name(settings=settings, storage_settings=storage_settings)
@@ -150,33 +158,33 @@ def _run_yolo(
         metadata["unmatched_target_classes"] = unmatched_names
     if resolved_model_name != settings.inference_model_name:
         metadata["resolved_model_path"] = resolved_model_name
+    return model, predict_kwargs, metadata, model_load_ms
 
+
+def _decode_rgb_image(image_bytes: bytes) -> Image.Image:
     try:
         with Image.open(BytesIO(image_bytes)) as image:
-            rgb_image = image.convert("RGB")
+            return image.convert("RGB")
     except Exception as error:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Image bytes cannot be decoded: {error}",
         ) from error
 
-    inference_start = perf_counter()
-    results = model(rgb_image, **predict_kwargs)
-    inference_wall_ms = (perf_counter() - inference_start) * 1000
 
-    first_result = results[0]
-    speed = getattr(first_result, "speed", None) or {}
-    latency_ms = {
-        "model_load": round(model_load_ms, 3),
-        "inference_wall": round(inference_wall_ms, 3),
+def _result_latency(result: Any) -> dict[str, float | None]:
+    speed = getattr(result, "speed", None) or {}
+    return {
         "preprocess": round(float(speed["preprocess"]), 3) if "preprocess" in speed else None,
         "inference": round(float(speed["inference"]), 3) if "inference" in speed else None,
         "postprocess": round(float(speed["postprocess"]), 3) if "postprocess" in speed else None,
     }
 
-    names = first_result.names
+
+def _detections_from_result(result: Any) -> list[InferenceDetection]:
+    names = result.names
     detections: list[InferenceDetection] = []
-    for box in first_result.boxes:
+    for box in result.boxes:
         x1, y1, x2, y2 = (float(value) for value in box.xyxy[0].tolist())
         class_id = int(box.cls[0])
         detections.append(
@@ -186,7 +194,72 @@ def _run_yolo(
                 confidence=float(box.conf[0]),
             )
         )
-    return detections, latency_ms, metadata
+    return detections
+
+
+def _run_yolo(
+    image_bytes: bytes,
+    *,
+    settings: InferenceServiceSettings,
+    storage_settings: IngestionSettings,
+) -> tuple[list[InferenceDetection], dict[str, float | None], dict[str, Any]]:
+    model, predict_kwargs, metadata, model_load_ms = _prepare_yolo_runtime(
+        settings=settings,
+        storage_settings=storage_settings,
+    )
+    rgb_image = _decode_rgb_image(image_bytes)
+    inference_start = perf_counter()
+    results = model(rgb_image, **predict_kwargs)
+    inference_wall_ms = (perf_counter() - inference_start) * 1000
+
+    first_result = results[0]
+    latency_ms = {
+        "model_load": round(model_load_ms, 3),
+        "inference_wall": round(inference_wall_ms, 3),
+        **_result_latency(first_result),
+    }
+    return _detections_from_result(first_result), latency_ms, metadata
+
+
+def _run_yolo_batch(
+    image_payloads: list[bytes],
+    *,
+    settings: InferenceServiceSettings,
+    storage_settings: IngestionSettings,
+) -> tuple[
+    list[tuple[list[InferenceDetection], dict[str, float | None]]],
+    dict[str, float | None],
+    dict[str, Any],
+]:
+    batch_start = perf_counter()
+    model, predict_kwargs, metadata, model_load_ms = _prepare_yolo_runtime(
+        settings=settings,
+        storage_settings=storage_settings,
+    )
+    decode_start = perf_counter()
+    rgb_images = [_decode_rgb_image(image_bytes) for image_bytes in image_payloads]
+    decode_ms = (perf_counter() - decode_start) * 1000
+
+    inference_start = perf_counter()
+    results = list(model(rgb_images, **predict_kwargs))
+    inference_wall_ms = (perf_counter() - inference_start) * 1000
+    if len(results) != len(image_payloads):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="YOLO returned a different number of results than requested images.",
+        )
+    item_results = [
+        (_detections_from_result(result), _result_latency(result))
+        for result in results
+    ]
+    latency_ms = {
+        "model_load": round(model_load_ms, 3),
+        "image_decode": round(decode_ms, 3),
+        "inference_wall": round(inference_wall_ms, 3),
+        "total_wall": round((perf_counter() - batch_start) * 1000, 3),
+        "images": float(len(image_payloads)),
+    }
+    return item_results, latency_ms, metadata
 
 
 def create_inference_app(
@@ -272,6 +345,88 @@ def create_inference_app(
                 "dataset_version": request.image.dataset_version,
                 "split": request.image.split,
                 "image_id": request.image.image_id,
+            },
+        )
+
+    @application.post(
+        "/v1/detect-batch",
+        response_model=InferenceBatchResponse,
+        dependencies=[Depends(authorize_request)],
+    )
+    async def detect_batch(request: InferenceBatchRequest) -> InferenceBatchResponse:
+        if len(request.images) > service_settings.inference_max_batch_size:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=(
+                    "Batch size exceeds inference_max_batch_size="
+                    f"{service_settings.inference_max_batch_size}."
+                ),
+            )
+
+        storage_client = create_gcs_storage_client(storage_settings)
+        payloads: list[tuple[InferenceImageReference, str, str, str, bytes]] = []
+        download_start = perf_counter()
+        for image in request.images:
+            requested_bucket = image.bucket or storage_settings.bucket_name
+            if requested_bucket != storage_settings.bucket_name:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="The requested bucket is not served by this inference service.",
+                )
+            object_key = _validated_object_key(image.object_key, service_settings)
+            image_bytes, content_type = _download_gcs_bytes(
+                bucket_name=requested_bucket,
+                object_key=object_key,
+                settings=storage_settings,
+                client=storage_client,
+            )
+            payloads.append((image, requested_bucket, object_key, content_type, image_bytes))
+        download_ms = (perf_counter() - download_start) * 1000
+
+        image_payloads = [
+            image_bytes
+            for (_image, _bucket, _object_key, _content_type, image_bytes) in payloads
+        ]
+        yolo_results, latency_ms, metadata = _run_yolo_batch(
+            image_payloads,
+            settings=service_settings,
+            storage_settings=storage_settings,
+        )
+        batch_latency_ms = {
+            **latency_ms,
+            "download": round(download_ms, 3),
+        }
+        results = [
+            InferenceBatchItemResponse(
+                image=image,
+                detections=detections,
+                latency_ms=item_latency,
+                metadata={
+                    "content_type": content_type,
+                    "bucket": requested_bucket,
+                    "object_key": object_key,
+                    "dataset_id": image.dataset_id,
+                    "dataset_version": image.dataset_version,
+                    "split": image.split,
+                    "image_id": image.image_id,
+                },
+            )
+            for (
+                image,
+                requested_bucket,
+                object_key,
+                content_type,
+                _image_bytes,
+            ), (detections, item_latency) in zip(payloads, yolo_results, strict=True)
+        ]
+        return InferenceBatchResponse(
+            model_name=service_settings.inference_model_name,
+            model_version=service_settings.inference_model_version or service_settings.inference_model_name,
+            results=results,
+            latency_ms=batch_latency_ms,
+            metadata={
+                **metadata,
+                "batch_size": len(results),
             },
         )
 

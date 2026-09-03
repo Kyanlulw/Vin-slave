@@ -140,6 +140,34 @@ class RealDatasetEvaluation(ApiModel):
     inference_mode: Literal["yolo"] = "yolo"
 
 
+class RealDatasetBatchEvaluationRequest(ApiModel):
+    image_ids: list[str] = Field(min_length=1, max_length=100)
+    force: bool = False
+    persist: bool = True
+
+    @model_validator(mode="after")
+    def has_image_ids(self) -> "RealDatasetBatchEvaluationRequest":
+        normalized = [image_id.strip() for image_id in self.image_ids if image_id.strip()]
+        if not normalized:
+            raise ValueError("image_ids must include at least one image id")
+        self.image_ids = list(dict.fromkeys(normalized))
+        return self
+
+
+class RealDatasetBatchEvaluationResult(ApiModel):
+    image_id: str
+    evaluation: RealDatasetEvaluation | None = None
+    error: str | None = None
+
+
+class RealDatasetBatchEvaluation(ApiModel):
+    count: int
+    succeeded: int
+    failed: int
+    inference_batch_used: bool = False
+    results: list[RealDatasetBatchEvaluationResult]
+
+
 class RealDatasetError(ApiModel):
     detail: str = Field(min_length=1)
 

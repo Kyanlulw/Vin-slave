@@ -11,7 +11,7 @@ from typing import Any, Protocol, cast
 
 from src.agents.graph import agent
 from src.models.agent_schemas import LabelQAReport
-from src.models.inference_schemas import InferenceImageReference, InferenceRequest
+from src.models.inference_schemas import InferenceImageReference, InferenceRequest, InferenceResponse
 from src.models.real_dataset_schemas import (
     RealDatasetBBox,
     RealDatasetEvaluation,
@@ -140,6 +140,7 @@ class RealDatasetService:
         image_override: RealDatasetImage | None = None,
         image_payload: bytes | None = None,
         image_reference: InferenceImageReference | None = None,
+        inference_response: InferenceResponse | None = None,
         revision: int = 0,
     ) -> RealDatasetEvaluation:
         image = image_override or self.get_image(split, image_id)
@@ -179,6 +180,25 @@ class RealDatasetService:
                 state["enable_rtdetr"] = False
             return await asyncio.to_thread(asyncio.run, self.agent_runner.ainvoke(state))
 
+        async def invoke_inference_response(response: InferenceResponse) -> dict[str, Any]:
+            pred_labels = [
+                detection.model_dump(mode="json", by_alias=False)
+                for detection in response.detections
+            ]
+            result = await invoke(image.image_url, pred_labels=pred_labels)
+            result = dict(result)
+            metadata = dict(result.get("metadata") or {})
+            metadata["inference_mode"] = "remote"
+            metadata["inference_model_name"] = response.model_name
+            metadata["inference_model_version"] = response.model_version
+            metadata["inference_latency_ms"] = response.latency_ms
+            metadata["inference_metadata"] = response.metadata
+            result["metadata"] = metadata
+            report = dict(result.get("qa_report", {}))
+            report["image_path"] = image.image_url
+            result["qa_report"] = report
+            return result
+
         async def invoke_remote(reference: InferenceImageReference) -> dict[str, Any]:
             if self.inference_client is None:
                 raise InferenceClientError("Remote inference client is not configured.")
@@ -202,29 +222,15 @@ class RealDatasetService:
                         "inference_error": str(error),
                     },
                 }
-            pred_labels = [
-                detection.model_dump(mode="json", by_alias=False)
-                for detection in response.detections
-            ]
-            result = await invoke(image.image_url, pred_labels=pred_labels)
-            result = dict(result)
-            metadata = dict(result.get("metadata") or {})
-            metadata["inference_mode"] = "remote"
-            metadata["inference_model_name"] = response.model_name
-            metadata["inference_model_version"] = response.model_version
-            metadata["inference_latency_ms"] = response.latency_ms
-            metadata["inference_metadata"] = response.metadata
-            result["metadata"] = metadata
-            report = dict(result.get("qa_report", {}))
-            report["image_path"] = image.image_url
-            result["qa_report"] = report
-            return result
+            return await invoke_inference_response(response)
 
         async with self._inference_lock:
             cached_result = None if force else self._cached_evaluation(cache_key)
             if cached_result is not None:
                 return self._to_evaluation(image, cached_result, revision=revision, cached=True)
-            if self.inference_client is not None:
+            if inference_response is not None:
+                result = await invoke_inference_response(inference_response)
+            elif self.inference_client is not None:
                 if image_reference is None:
                     raise FileNotFoundError("Remote inference requires a GCS image reference.")
                 result = await invoke_remote(image_reference)

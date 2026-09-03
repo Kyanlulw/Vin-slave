@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
+  useEvaluateRealDatasetBatchMutation,
   useEvaluateRealDatasetImageMutation,
   useRealDatasetFrameSamplesQuery,
 } from "../api/queries";
@@ -208,6 +209,7 @@ export function RealDataQAView() {
   );
   const split = requestedSplit ?? samplesQuery.data?.split ?? "";
   const evaluation = useEvaluateRealDatasetImageMutation();
+  const batchEvaluation = useEvaluateRealDatasetBatchMutation();
   const samples = samplesQuery.data?.results ?? [];
   const images = useMemo(
     () => samples.flatMap((sample) => sample.cameras),
@@ -221,6 +223,21 @@ export function RealDataQAView() {
       [evaluationKeyForResult(evaluation.data)]: evaluation.data,
     }));
   }, [evaluation.data]);
+
+  useEffect(() => {
+    if (!batchEvaluation.data) return;
+    const completed = batchEvaluation.data.results
+      .map((result) => result.evaluation)
+      .filter((item): item is RealDatasetEvaluationDto => item !== null);
+    if (completed.length === 0) return;
+    setEvaluationsByImageKey((previous) => {
+      const next = { ...previous };
+      completed.forEach((item) => {
+        next[evaluationKeyForResult(item)] = item;
+      });
+      return next;
+    });
+  }, [batchEvaluation.data]);
 
   useEffect(() => {
     if (!images.some((image) => image.id === selectedId)) {
@@ -279,6 +296,7 @@ export function RealDataQAView() {
     samplesQuery.data?.availableDatasets.forEach((item) => options.add(item));
     return Array.from(options);
   }, [samplesQuery.data?.availableDatasets]);
+  const isEvaluating = evaluation.isPending || batchEvaluation.isPending;
 
   const updateUrlFilter = (key: "dataset" | "split", value: string) => {
     const next = new URLSearchParams(searchParams);
@@ -568,27 +586,65 @@ export function RealDataQAView() {
                 <span className="eyebrow">LangGraph + YOLO</span>
                 <h2>Label QA Agent</h2>
               </div>
-              <Button
-                variant="primary"
-                disabled={!selected || evaluation.isPending}
-                onClick={() =>
-                  selected &&
-                  evaluation.mutate({
-                    split,
-                    imageId: selected.id,
-                    persist: true,
-                  })
-                }
-              >
-                {evaluation.isPending
-                  ? t("Running verification...", "Đang chạy kiểm tra...")
-                  : t("Run Agent & Generate QA Cases", "Chạy Agent & tạo QA Cases")}
-              </Button>
+              <div className="real-data-agent-actions">
+                <Button
+                  variant="secondary"
+                  disabled={images.length === 0 || isEvaluating}
+                  onClick={() =>
+                    batchEvaluation.mutate({
+                      split,
+                      imageIds: images.map((image) => image.id),
+                      persist: true,
+                    })
+                  }
+                >
+                  {batchEvaluation.isPending
+                    ? t("Running page...", "Đang chạy cả trang...")
+                    : t("Run Current Page", "Chạy cả trang")}
+                </Button>
+                <Button
+                  variant="primary"
+                  disabled={!selected || isEvaluating}
+                  onClick={() =>
+                    selected &&
+                    evaluation.mutate({
+                      split,
+                      imageId: selected.id,
+                      persist: true,
+                    })
+                  }
+                >
+                  {evaluation.isPending
+                    ? t("Running verification...", "Đang chạy kiểm tra...")
+                    : t("Run Agent & Generate QA Cases", "Chạy Agent & tạo QA Cases")}
+                </Button>
+              </div>
             </div>
             {evaluation.isError ? (
               <div className="real-data-agent-error">
                 <strong>{t("Verification request failed", "Yêu cầu kiểm tra thất bại")}</strong>
                 <p>{evaluation.error.message}</p>
+              </div>
+            ) : null}
+            {batchEvaluation.isError ? (
+              <div className="real-data-agent-error">
+                <strong>{t("Batch verification failed", "Chạy batch thất bại")}</strong>
+                <p>{batchEvaluation.error.message}</p>
+              </div>
+            ) : null}
+            {batchEvaluation.data ? (
+              <div className="real-data-agent-empty">
+                <p>
+                  {t(
+                    `Batch completed: ${batchEvaluation.data.succeeded}/${batchEvaluation.data.count} images.`,
+                    `Batch hoàn tất: ${batchEvaluation.data.succeeded}/${batchEvaluation.data.count} ảnh.`,
+                  )}
+                </p>
+                <small>
+                  {batchEvaluation.data.inferenceBatchUsed
+                    ? t("Remote inference batch endpoint was used.", "Đã dùng endpoint batch của Inference Service.")
+                    : t("Fallback evaluation path was used.", "Đã dùng đường chạy fallback.")}
+                </small>
               </div>
             ) : null}
             {!report && !evaluation.isPending ? (

@@ -176,6 +176,20 @@ export interface RealDatasetEvaluationDto {
   inferenceMode: "yolo";
 }
 
+export interface RealDatasetBatchEvaluationResultDto {
+  imageId: string;
+  evaluation: RealDatasetEvaluationDto | null;
+  error: string | null;
+}
+
+export interface RealDatasetBatchEvaluationDto {
+  count: number;
+  succeeded: number;
+  failed: number;
+  inferenceBatchUsed: boolean;
+  results: RealDatasetBatchEvaluationResultDto[];
+}
+
 export interface AnnotationDocumentDto {
   datasetId: string;
   datasetVersion: string;

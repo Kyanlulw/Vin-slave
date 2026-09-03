@@ -52,3 +52,14 @@ test("real data dataset selector keeps both official datasets available", () => 
   assert.match(realDataSource, /new Set<string>\(REAL_DATA_DATASET_OPTIONS\)/);
   assert.match(realDataSource, /availableDatasets\.forEach/);
 });
+
+test("real data view can run current page through the batch evaluation endpoint", () => {
+  const realDataSource = readSource("../src/views/RealDataQAView.tsx");
+  const apiSource = readSource("../src/api/labelGuardianApi.ts");
+
+  assert.match(realDataSource, /useEvaluateRealDatasetBatchMutation/);
+  assert.match(realDataSource, /imageIds: images\.map\(\(image\) => image\.id\)/);
+  assert.match(realDataSource, /Run Current Page/);
+  assert.match(apiSource, /evaluateRealDatasetImagesBatch/);
+  assert.match(apiSource, /\/evaluate-batch/);
+});

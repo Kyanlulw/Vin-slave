@@ -217,6 +217,7 @@ class InferenceServiceSettings(BaseSettings):
     inference_model_cache_dir: Path = Path("/tmp/label-guardian-models")
     inference_confidence_threshold: float = Field(default=0.25, ge=0.0, le=1.0)
     inference_allowed_object_prefixes: str = "datasets/official"
+    inference_max_batch_size: int = Field(default=64, ge=1, le=256)
 
     @field_validator("inference_auth_token", mode="before")
     @classmethod
