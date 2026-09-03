@@ -33,10 +33,10 @@ from src.models.real_dataset_schemas import (
     AnnotationRestoreRequest,
     AnnotationRevisionList,
     AnnotationSaveRequest,
-    RealDatasetBBox,
     RealDatasetBatchEvaluation,
     RealDatasetBatchEvaluationRequest,
     RealDatasetBatchEvaluationResult,
+    RealDatasetBBox,
     RealDatasetEvaluation,
     RealDatasetFrameSample,
     RealDatasetFrameSampleList,
@@ -53,6 +53,14 @@ from src.services.real_dataset_service import RealDatasetService
 logger = logging.getLogger(__name__)
 
 _process_gcs_client = None
+
+
+@dataclass(frozen=True)
+class _EvaluationImage:
+    image_id: str
+    image: RealDatasetImage
+    image_row: QAImage | None
+    revision: int
 
 
 @dataclass(frozen=True)
@@ -1276,14 +1284,15 @@ async def _prepare_evaluation_input(
     split: str,
     image_id: str,
 ) -> _EvaluationInput:
+    prepared = await _prepare_evaluation_image(session, service, split, image_id)
     image_payload: bytes | None = None
     image_reference: InferenceImageReference | None = None
     if service.dataset_backend == "database":
-        image_row = await _get_database_image_row(session, service, image_id, split=split)
-        effective_image = await _get_database_image(session, service, image_id, split=split)
+        if prepared.image_row is None:
+            raise FileNotFoundError(f"Dataset image does not exist in database for split {split}: {image_id}")
         if service.uses_remote_inference:
-            bucket, object_key = _bucket_and_key(image_row)
-            dataset_id, dataset_version = _image_dataset_release(service, effective_image)
+            bucket, object_key = _bucket_and_key(prepared.image_row)
+            dataset_id, dataset_version = _image_dataset_release(service, prepared.image)
             image_reference = InferenceImageReference(
                 dataset_id=dataset_id,
                 dataset_version=dataset_version,
@@ -1293,18 +1302,40 @@ async def _prepare_evaluation_input(
                 object_key=object_key,
             )
         else:
-            image_payload, _ = await asyncio.to_thread(_download_gcs_image, image_row)
+            image_payload, _ = await asyncio.to_thread(_download_gcs_image, prepared.image_row)
+
+    return _EvaluationInput(
+        image_id=image_id,
+        image=prepared.image,
+        image_payload=image_payload,
+        image_reference=image_reference,
+        revision=prepared.revision,
+    )
+
+
+async def _prepare_evaluation_image(
+    session: AsyncSession,
+    service: RealDatasetService,
+    split: str,
+    image_id: str,
+) -> _EvaluationImage:
+    image_row: QAImage | None = None
+    if service.dataset_backend == "database":
+        image_row = await _get_database_image_row(session, service, image_id, split=split)
+        base_image = await _db_image_to_contract(session, image_row, split=split)
+        dataset_id, dataset_version = _image_dataset_release(service, base_image)
     else:
         base_image = service.get_image(split, image_id)
-        effective_image = (
-            await AnnotationEditorService.document(
-                session,
-                image=base_image,
-                dataset_id=service.dataset_id,
-                dataset_version=service.dataset_version,
-            )
-        ).image
-
+        dataset_id = service.dataset_id
+        dataset_version = service.dataset_version
+    effective_image = (
+        await AnnotationEditorService.document(
+            session,
+            image=base_image,
+            dataset_id=dataset_id,
+            dataset_version=dataset_version,
+        )
+    ).image
     dataset_id, dataset_version = _image_dataset_release(service, effective_image)
     latest = await AnnotationEditorService.latest_revision(
         session,
@@ -1313,11 +1344,10 @@ async def _prepare_evaluation_input(
         split=split,
         image_id=image_id,
     )
-    return _EvaluationInput(
+    return _EvaluationImage(
         image_id=image_id,
         image=effective_image,
-        image_payload=image_payload,
-        image_reference=image_reference,
+        image_row=image_row,
         revision=latest.version if latest else 0,
     )
 
@@ -1349,6 +1379,32 @@ async def evaluate_real_dataset_image(
         case_ids = await RealDatasetQaService().persist(session, evaluation)
         evaluation.persisted = True
         evaluation.created_case_ids = case_ids
+        return evaluation
+    except (FileNotFoundError, YoloDatasetLayoutError) as error:
+        raise _not_found(error) from error
+
+
+@router.get("/images/{split}/{image_id}/evaluation", response_model=RealDatasetEvaluation)
+async def get_real_dataset_image_evaluation(
+    split: str,
+    image_id: str,
+    service: Annotated[RealDatasetService, Depends(get_real_dataset_service)],
+    _operator: Annotated[AuthenticatedUser, Depends(require_roles("reviewer", "admin"))],
+    session: AsyncSession = Depends(get_db_session),
+) -> RealDatasetEvaluation:
+    try:
+        prepared = await _prepare_evaluation_image(session, service, split, image_id)
+        dataset_id, dataset_version = _image_dataset_release(service, prepared.image)
+        evaluation = await RealDatasetQaService().latest_evaluation(
+            session,
+            dataset_id=dataset_id,
+            dataset_version=dataset_version,
+            split=split,
+            image_id=image_id,
+            image=prepared.image,
+        )
+        if evaluation is None:
+            raise HTTPException(status_code=404, detail="No persisted evaluation for image")
         return evaluation
     except (FileNotFoundError, YoloDatasetLayoutError) as error:
         raise _not_found(error) from error

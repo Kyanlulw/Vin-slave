@@ -63,3 +63,15 @@ test("real data view can run current page through the batch evaluation endpoint"
   assert.match(apiSource, /evaluateRealDatasetImagesBatch/);
   assert.match(apiSource, /\/evaluate-batch/);
 });
+
+test("real data view hydrates persisted evaluations for the selected image", () => {
+  const realDataSource = readSource("../src/views/RealDataQAView.tsx");
+  const querySource = readSource("../src/api/queries.ts");
+  const apiSource = readSource("../src/api/labelGuardianApi.ts");
+
+  assert.match(realDataSource, /useRealDatasetImageEvaluationQuery/);
+  assert.match(realDataSource, /persistedEvaluationQuery\.data/);
+  assert.match(querySource, /realDatasetEvaluation/);
+  assert.match(apiSource, /getRealDatasetImageEvaluation/);
+  assert.match(apiSource, /\/evaluation/);
+});

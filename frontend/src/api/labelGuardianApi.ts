@@ -244,6 +244,24 @@ export const labelGuardianApiV1 = {
     );
   },
 
+  async getRealDatasetImageEvaluation(
+    split: string,
+    imageId: string,
+    signal?: AbortSignal,
+  ): Promise<RealDatasetEvaluationDto | null> {
+    try {
+      return await requestJson<RealDatasetEvaluationDto>(
+        `${API_V1_PREFIX}/dataset/images/${encodeURIComponent(split)}/${encodeURIComponent(imageId)}/evaluation`,
+        signal,
+      );
+    } catch (error) {
+      if (error instanceof LabelGuardianApiError && error.status === 404) {
+        return null;
+      }
+      throw error;
+    }
+  },
+
   evaluateRealDatasetImagesBatch(
     split: string,
     imageIds: string[],

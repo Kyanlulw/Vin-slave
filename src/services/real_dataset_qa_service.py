@@ -4,15 +4,22 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from hashlib import sha256
+from typing import Literal, cast
 from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.models.agent_schemas import LabelQAReport
 from src.models.audit_log import AuditLog
 from src.models.qa_case import QaCase
 from src.models.qa_evaluation import QaEvaluation
-from src.models.real_dataset_schemas import RealDatasetEvaluation
+from src.models.real_dataset_schemas import (
+    RealDatasetEvaluation,
+    RealDatasetImage,
+    RealDatasetMatch,
+    RealDatasetPrediction,
+)
 
 RISK_BY_SEVERITY = {"high": 90, "medium": 65, "low": 35}
 QUEUE_ERROR_TYPE = {
@@ -26,6 +33,70 @@ QUEUE_ERROR_TYPE = {
 
 
 class RealDatasetQaService:
+    async def latest_evaluation(
+        self,
+        session: AsyncSession,
+        *,
+        dataset_id: str,
+        dataset_version: str,
+        split: str,
+        image_id: str,
+        image: RealDatasetImage,
+    ) -> RealDatasetEvaluation | None:
+        stored_evaluation = await session.scalar(
+            select(QaEvaluation)
+            .where(
+                QaEvaluation.dataset_id == dataset_id,
+                QaEvaluation.dataset_version == dataset_version,
+                QaEvaluation.split == split,
+                QaEvaluation.image_id == image_id,
+            )
+            .order_by(QaEvaluation.updated_at.desc(), QaEvaluation.created_at.desc())
+            .limit(1)
+        )
+        if stored_evaluation is None:
+            return None
+
+        status = stored_evaluation.status
+        if status not in {"pass", "needs_review", "error"}:
+            status = "error"
+        case_ids = list(
+            (
+                await session.scalars(
+                    select(QaCase.id)
+                    .where(QaCase.evaluation_id == stored_evaluation.id)
+                    .order_by(QaCase.created_at)
+                )
+            ).all()
+        )
+        return RealDatasetEvaluation(
+            evaluation_id=stored_evaluation.id,
+            dataset_id=stored_evaluation.dataset_id,
+            dataset_version=stored_evaluation.dataset_version,
+            model_name=stored_evaluation.model_name,
+            image=image,
+            report=LabelQAReport(
+                image_path=image.image_url,
+                status=cast(Literal["pass", "needs_review", "error"], status),
+                summary="Loaded persisted YOLO evaluation from database.",
+                metrics=stored_evaluation.metrics_json or {},
+                issues=[],
+            ),
+            predictions=[
+                RealDatasetPrediction.model_validate(item)
+                for item in stored_evaluation.predictions_json or []
+            ],
+            matches=[
+                RealDatasetMatch.model_validate(item)
+                for item in stored_evaluation.matches_json or []
+            ],
+            unmatched_ground_truth=stored_evaluation.unmatched_ground_truth_json or [],
+            unmatched_predictions=stored_evaluation.unmatched_predictions_json or [],
+            cached=True,
+            persisted=True,
+            created_case_ids=case_ids,
+        )
+
     async def persist(
         self,
         session: AsyncSession,

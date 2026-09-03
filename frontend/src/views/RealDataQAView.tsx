@@ -4,6 +4,7 @@ import {
   useEvaluateRealDatasetBatchMutation,
   useEvaluateRealDatasetImageMutation,
   useRealDatasetFrameSamplesQuery,
+  useRealDatasetImageEvaluationQuery,
 } from "../api/queries";
 import type {
   RealDatasetEvaluationDto,
@@ -268,6 +269,11 @@ export function RealDataQAView() {
     () => images.find((image) => image.id === selectedId) ?? images[0],
     [images, selectedId],
   );
+  const persistedEvaluationQuery = useRealDatasetImageEvaluationQuery(
+    split,
+    selected?.id,
+    Boolean(selected),
+  );
   const selectedAsset = useAuthenticatedAssetUrl(selected?.imageUrl);
   const selectedSample = useMemo(
     () =>
@@ -297,6 +303,15 @@ export function RealDataQAView() {
     return Array.from(options);
   }, [samplesQuery.data?.availableDatasets]);
   const isEvaluating = evaluation.isPending || batchEvaluation.isPending;
+
+  useEffect(() => {
+    const persistedEvaluation = persistedEvaluationQuery.data;
+    if (!persistedEvaluation) return;
+    setEvaluationsByImageKey((previous) => ({
+      ...previous,
+      [evaluationKeyForResult(persistedEvaluation)]: persistedEvaluation,
+    }));
+  }, [persistedEvaluationQuery.data]);
 
   const updateUrlFilter = (key: "dataset" | "split", value: string) => {
     const next = new URLSearchParams(searchParams);

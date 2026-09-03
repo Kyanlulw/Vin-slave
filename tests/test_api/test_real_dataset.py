@@ -566,9 +566,13 @@ async def test_evaluation_persists_idempotent_qa_cases(tmp_path, postgres_async_
         async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as client:
             first = await client.post("/api/v1/dataset/images/val/000001/evaluate?persist=true")
             second = await client.post("/api/v1/dataset/images/val/000001/evaluate?persist=true")
+            restored = await client.get("/api/v1/dataset/images/val/000001/evaluation")
             cases = await client.get("/api/v1/qa-cases")
     assert first.status_code == 200
     assert second.json()["createdCaseIds"] == first.json()["createdCaseIds"]
+    assert restored.status_code == 200
+    assert restored.json()["persisted"] is True
+    assert restored.json()["predictions"][0]["className"] == "truck"
     assert cases.json()["results"][0]["sourceImageId"] == "000001"
 
 
