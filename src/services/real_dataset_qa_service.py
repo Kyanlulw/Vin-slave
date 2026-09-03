@@ -69,19 +69,24 @@ class RealDatasetQaService:
                 )
             ).all()
         )
+        report = (
+            LabelQAReport.model_validate(stored_evaluation.report_json)
+            if stored_evaluation.report_json
+            else LabelQAReport(
+                image_path=image.image_url,
+                status=cast(Literal["pass", "needs_review", "error"], status),
+                summary="Loaded persisted YOLO evaluation from database.",
+                metrics=stored_evaluation.metrics_json or {},
+                issues=[],
+            )
+        )
         return RealDatasetEvaluation(
             evaluation_id=stored_evaluation.id,
             dataset_id=stored_evaluation.dataset_id,
             dataset_version=stored_evaluation.dataset_version,
             model_name=stored_evaluation.model_name,
             image=image,
-            report=LabelQAReport(
-                image_path=image.image_url,
-                status=cast(Literal["pass", "needs_review", "error"], status),
-                summary="Loaded persisted YOLO evaluation from database.",
-                metrics=stored_evaluation.metrics_json or {},
-                issues=[],
-            ),
+            report=report,
             predictions=[
                 RealDatasetPrediction.model_validate(item)
                 for item in stored_evaluation.predictions_json or []
@@ -112,6 +117,7 @@ class RealDatasetQaService:
             "model_name": evaluation.model_name,
             "status": evaluation.report.status,
             "metrics_json": evaluation.report.metrics,
+            "report_json": evaluation.report.model_dump(mode="json", by_alias=True),
             "predictions_json": [item.model_dump(mode="json", by_alias=True) for item in evaluation.predictions],
             "matches_json": [item.model_dump(mode="json", by_alias=True) for item in evaluation.matches],
             "unmatched_ground_truth_json": evaluation.unmatched_ground_truth,

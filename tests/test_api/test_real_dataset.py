@@ -573,6 +573,7 @@ async def test_evaluation_persists_idempotent_qa_cases(tmp_path, postgres_async_
     assert restored.status_code == 200
     assert restored.json()["persisted"] is True
     assert restored.json()["predictions"][0]["className"] == "truck"
+    assert restored.json()["report"]["issues"][0]["issueType"] == "wrong_class"
     assert cases.json()["results"][0]["sourceImageId"] == "000001"
 
 

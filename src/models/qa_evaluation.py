@@ -30,6 +30,7 @@ class QaEvaluation(Base):
     model_name: Mapped[str] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(32), index=True)
     metrics_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    report_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     predictions_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     matches_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     unmatched_ground_truth_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)

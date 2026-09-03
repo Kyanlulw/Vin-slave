@@ -16,7 +16,7 @@ Set these on the Railway/GCP VM App Service:
 INFERENCE_MODE=remote
 INFERENCE_SERVICE_URL=https://<inference-service-url>
 INFERENCE_SERVICE_TOKEN=<shared-secret>
-INFERENCE_REQUEST_TIMEOUT_SECONDS=30
+INFERENCE_REQUEST_TIMEOUT_SECONDS=180
 ```
 
 When remote mode is enabled, `/api/v1/dataset/images/{split}/{imageId}/evaluate`
