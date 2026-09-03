@@ -36,6 +36,10 @@ const EMPTY_CASES: QaCaseDto[] = [];
 const PAGE_SIZE = 10;
 const DEFAULT_QA_QUEUE_DATASET = "nuscenes";
 const DEFAULT_QA_QUEUE_SPLIT = "product";
+const QA_QUEUE_DATASET_OPTIONS = [
+  { value: "nuscenes", label: "nuScenes" },
+  { value: "kitti", label: "KITTI" },
+] as const;
 
 function evidenceLines(qaCase: QaCaseDto): string[] {
   const lines: string[] = [];
@@ -420,8 +424,11 @@ export function ApiQAQueueView({
             onChange={(event) => setDatasetScope(event.target.value)}
             aria-label="Chọn dataset"
           >
-            <option value="nuscenes">nuScenes</option>
-            <option value="kitti">KITTI</option>
+            {QA_QUEUE_DATASET_OPTIONS.map((item) => (
+              <option key={item.value} value={item.value}>
+                {item.label}
+              </option>
+            ))}
           </select>
           <select
             value={scopedSplit}
@@ -613,8 +620,11 @@ export function ApiQAQueueView({
                 value={scopedDataset}
                 onChange={(event) => setDatasetScope(event.target.value)}
               >
-                <option value="nuscenes">nuScenes</option>
-                <option value="kitti">KITTI</option>
+                {QA_QUEUE_DATASET_OPTIONS.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
               </select>
             </label>
             <label>

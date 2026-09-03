@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { RealDatasetEvaluationDto } from "../src/api/types.ts";
 import {
@@ -6,6 +7,9 @@ import {
   boxIntersectsImage,
   reportForSelectedImage,
 } from "../src/utils/realDataset.ts";
+
+const readSource = (relativePath: string) =>
+  readFileSync(new URL(relativePath, import.meta.url), "utf8");
 
 test("real data view does not read a report before an evaluation exists", () => {
   assert.equal(reportForSelectedImage(undefined, undefined), undefined);
@@ -39,4 +43,12 @@ test("display filtering hides only boxes that do not intersect the image", () =>
     apiBoxIntersectsImage({ x1: 110, y1: 10, x2: 130, y2: 30 }, 100, 100),
     false,
   );
+});
+
+test("real data dataset selector keeps both official datasets available", () => {
+  const realDataSource = readSource("../src/views/RealDataQAView.tsx");
+
+  assert.match(realDataSource, /REAL_DATA_DATASET_OPTIONS = \["nuscenes", "kitti"\]/);
+  assert.match(realDataSource, /new Set<string>\(REAL_DATA_DATASET_OPTIONS\)/);
+  assert.match(realDataSource, /availableDatasets\.forEach/);
 });

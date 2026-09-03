@@ -456,6 +456,15 @@ async def test_database_browse_is_scoped_to_configured_dataset_release_and_split
                     storage_key="datasets/official/nuscenes/product/frames/scene-1/sample-1/CAM_FRONT.jpg",
                 ),
                 QAImage(
+                    source_image_id="kitti-product",
+                    filename="images/product/kitti.jpg",
+                    width=100,
+                    height=80,
+                    dataset="kitti",
+                    release="product",
+                    storage_key="datasets/official/kitti/product/frames/sequence-default/000000/CAM_FRONT.png",
+                ),
+                QAImage(
                     source_image_id="wrong-release",
                     filename="images/product/wrong-release.jpg",
                     width=100,
@@ -498,12 +507,18 @@ async def test_database_browse_is_scoped_to_configured_dataset_release_and_split
         async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as client:
             listed = await client.get("/api/v1/dataset/images?split=product")
             samples = await client.get("/api/v1/dataset/frame-samples?split=product")
+            kitti_samples = await client.get("/api/v1/dataset/frame-samples?split=product&dataset=kitti")
             foreign = await client.get("/api/v1/dataset/images/product/wrong-release")
             wrong_split = await client.get("/api/v1/dataset/images/product/wrong-split")
 
     assert listed.status_code == 200
     assert [row["id"] for row in listed.json()["results"]] == ["wanted-image"]
+    assert listed.json()["availableDatasets"] == ["kitti", "nuscenes"]
     assert [camera["id"] for row in samples.json()["results"] for camera in row["cameras"]] == ["wanted-image"]
+    assert samples.json()["availableDatasets"] == ["kitti", "nuscenes"]
+    assert kitti_samples.status_code == 200
+    assert [camera["id"] for row in kitti_samples.json()["results"] for camera in row["cameras"]] == ["kitti-product"]
+    assert kitti_samples.json()["availableDatasets"] == ["kitti", "nuscenes"]
     assert foreign.status_code == 404
     assert wrong_split.status_code == 404
 

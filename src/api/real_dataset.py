@@ -158,6 +158,21 @@ def _database_dataset_conditions(
     )
 
 
+async def _available_database_datasets(
+    session: AsyncSession,
+    service: RealDatasetService,
+) -> list[str]:
+    rows = (
+        await session.scalars(
+            select(QAImage.dataset)
+            .where(QAImage.release == service.dataset_version)
+            .distinct()
+            .order_by(QAImage.dataset)
+        )
+    ).all()
+    return sorted({name for name in rows if name})
+
+
 def _escaped_like_segment(value: str) -> str:
     """Escape a user-provided path segment before using it in a LIKE pattern."""
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -678,7 +693,7 @@ async def _list_database_frame_samples(
         _database_metadata_split(storage_key, filename, service.default_split)
         for storage_key, filename, _ in metadata_rows
     }
-    available_datasets = sorted({name for _, _, name in metadata_rows if name})
+    available_datasets = await _available_database_datasets(session, service)
     for row in rows:
         identity = _frame_sample_identity(row.storage_key)
         if identity is None:
@@ -850,6 +865,7 @@ async def _list_database_images(
             for storage_key, filename, _ in metadata_rows
         }
     ) or [selected_split]
+    available_datasets = await _available_database_datasets(session, service)
     rows = (
         await session.scalars(
             select(QAImage)
@@ -885,7 +901,7 @@ async def _list_database_images(
         limit=limit,
         offset=offset,
         available_splits=available_splits,
-        available_datasets=sorted({name for _, _, name in metadata_rows if name}),
+        available_datasets=available_datasets,
         classes=list(class_rows),
     )
 

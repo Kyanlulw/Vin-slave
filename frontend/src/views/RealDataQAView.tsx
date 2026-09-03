@@ -22,6 +22,7 @@ import {
 } from "../utils/realDataset";
 
 const PAGE_SIZE = 10;
+const REAL_DATA_DATASET_OPTIONS = ["nuscenes", "kitti"] as const;
 const boxColors = [
   "#2563eb",
   "#dc2626",
@@ -273,9 +274,11 @@ export function RealDataQAView() {
   const selectedPredictions = selectedEvaluation?.predictions ?? [];
   const report = reportForSelectedImage(selectedEvaluation, selected?.id);
   const lastPage = samplesQuery.data ? offset + PAGE_SIZE >= samplesQuery.data.count : true;
-  const datasetOptions = samplesQuery.data?.availableDatasets.length
-    ? samplesQuery.data.availableDatasets
-    : ["nuscenes", "kitti"];
+  const datasetOptions = useMemo(() => {
+    const options = new Set<string>(REAL_DATA_DATASET_OPTIONS);
+    samplesQuery.data?.availableDatasets.forEach((item) => options.add(item));
+    return Array.from(options);
+  }, [samplesQuery.data?.availableDatasets]);
 
   const updateUrlFilter = (key: "dataset" | "split", value: string) => {
     const next = new URLSearchParams(searchParams);
