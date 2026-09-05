@@ -127,3 +127,12 @@ skills-lock.json
 test_kitti_200.json
 test_nuscenes_100.json
 frontend/test/landing-navigation.test.ts
+
+# Datasets and evaluation artifacts stay local (size + nuImages license)
+/nuimages-v1.0-mini/
+/eval/golden_v0_1/
+/eval/golden_v0_1.zip
+/eval/golden_v0_2_nuimages/
+/eval/golden_v0_2_nuimages.zip
+/output/
+/Ultralytics/
