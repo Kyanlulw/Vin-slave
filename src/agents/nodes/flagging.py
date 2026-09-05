@@ -1,11 +1,14 @@
 from src.agents.geometry import iou
 from src.agents.state import LabelQAState
+from src.services.yolo import canonical_detection_class
 
 # Prediction có confidence >= ngưỡng này mà không có label nào gần đó
 # -> nghi ngờ mạnh là bị thiếu nhãn (annotator bỏ sót).
 MISSING_LABEL_CONF_HIGH = 0.6
 # Dưới ngưỡng này thì coi model cũng không đủ chắc chắn để nghi ngờ.
-MISSING_LABEL_CONF_LOW = 0.25
+# Nâng từ 0.25 lên 0.4: đo lường trên golden nuImages cho thấy hầu hết flag
+# missing_label dưới 0.4 là detector hallucinate/nhìn nhầm, không phải nhãn thiếu.
+MISSING_LABEL_CONF_LOW = 0.4
 
 # best_iou >= ngưỡng này giữa gt/pred không match được coi là "có liên hệ"
 # (cùng một vật thể nhưng bbox lệch), thay vì "không liên quan gì nhau".
@@ -26,18 +29,68 @@ LOOSE_BBOX_IOU_MAX = 0.85
 # blocking=False để không tự động đẩy status ảnh lên "needs_review".
 SMALL_OBJECT_AREA_MAX = 32 * 32
 
+# --- Cổng bằng chứng (evidence gates) -------------------------------------------------
+# Nguyên tắc: detector chỉ là "nhân chứng", không phải ground truth. Chỉ buộc tội
+# nhãn khi bằng chứng phản kháng đủ mạnh; thiếu bằng chứng (detector không thấy gì)
+# với vật thể nhỏ/xa thường là do detector bỏ sót, không phải do nhãn sai.
+
+# Buộc tội wrong_class cần detector tự tin tới mức này về class của nó.
+# Dưới ngưỡng: match vẫn hợp lệ về vị trí, chỉ không đổ lỗi sai class.
+WRONG_CLASS_CONF_MIN = 0.5
+
+# Nhóm class "anh em" dễ nhầm lẫn nhau (car/truck/bus trong COCO thường confuse
+# trên ảnh giao thông). Trong cùng nhóm chỉ buộc tội khi detector gần như chắc chắn.
+WRONG_CLASS_SIBLING_GROUPS: tuple[frozenset[str], ...] = (frozenset({"car", "truck", "bus"}),)
+WRONG_CLASS_SIBLING_CONF_MIN = 0.9
+
+# Label không match pred nào và detector "không thấy gì gần đó" (best_iou thấp):
+# chỉ buộc tội extra/wrong khi label đủ lớn để một detector hoạt động bình thường
+# lẽ ra phải thấy. Vật thể nhỏ hơn diện tích này (theo tỉ lệ diện tích ảnh) thì
+# việc detector không thấy là yếu tố dự báo kém — bỏ qua để không đổ lỗi oan.
+EXTRA_LABEL_MIN_AREA_FRACTION = 0.005
+
+# Tương tự cho bbox_misaligned: với vật thể rất nhỏ, IoU giữa bbox amodal (nuImages
+# vẽ cả phần bị che) và bbox visible của detector dễ tụt xuống vùng "nghi lệch" dù
+# nhãn đúng. Giá trị do sweep trên dev split chọn (2026-09): recall bbox giữ 4/6,
+# FP/image giảm ~2/3 so với không cổng.
+BBOX_MISALIGN_MIN_AREA_FRACTION = 0.005
+
+
+def _area_fraction(bbox: dict | None, image_size: tuple[float, float] | None) -> float | None:
+    """Diện tích bbox theo tỉ lệ diện tích ảnh; None khi không biết kích thước ảnh."""
+    if not image_size or not isinstance(bbox, dict):
+        return None
+    width, height = image_size
+    if not width or not height:
+        return None
+    area = (bbox["x2"] - bbox["x1"]) * (bbox["y2"] - bbox["y1"])
+    return area / (width * height)
+
+
+def _canonical_class(class_name: str) -> str:
+    return canonical_detection_class(class_name) or class_name.strip().lower()
+
+
+def _same_sibling_group(gt_class: str, pred_class: str) -> bool:
+    pair = {_canonical_class(gt_class), _canonical_class(pred_class)}
+    return any(pair <= group for group in WRONG_CLASS_SIBLING_GROUPS)
+
 
 def flag_issues(
     matches: list[dict],
     unmatched_gt: list[dict],
     unmatched_pred: list[dict],
     gt_labels: list[dict],
+    image_size: tuple[float, float] | None = None,
 ) -> list[dict]:
     """Áp dụng rule dựa trên số liệu matching để gắn cờ nghi vấn.
 
     Đây là bước quyết định (issue_type, severity) hoàn toàn bằng code dựa
     trên số liệu — LLM ở node sau chỉ diễn giải/đề xuất fix cho các issue
     đã được xác định ở đây, không được tự ý đổi loại lỗi hay mức độ.
+
+    ``image_size`` (width, height) bật các cổng theo tỉ lệ diện tích; khi None
+    (không biết kích thước ảnh) các cổng đó không áp dụng.
 
     Hàm thuần (không đụng LabelQAState) để dễ test độc lập — xem flag_issues_node bên dưới.
     """
@@ -77,9 +130,14 @@ def flag_issues(
             elif b_matched and not a_matched:
                 redundant_unmatched_ids.add(a["label_id"])
 
-    # 1. Khớp vị trí tốt nhưng sai class
+    # 1. Khớp vị trí tốt nhưng sai class — chỉ buộc tội khi detector đủ tự tin;
+    #    trong nhóm class dễ nhầm (car/truck/bus) thì cần gần như chắc chắn.
     for m in matches:
         if not m["class_match"]:
+            confidence = m.get("pred_confidence") or 0.0
+            bar = WRONG_CLASS_SIBLING_CONF_MIN if _same_sibling_group(m["gt_class"], m["pred_class"]) else WRONG_CLASS_CONF_MIN
+            if confidence < bar:
+                continue  # detector không đủ chắc để đổ lỗi sai class; match vị trí vẫn hợp lệ
             issues.append(
                 {
                     "label_id": m["gt_id"],
@@ -125,15 +183,22 @@ def flag_issues(
                 "issue_type": "missing_label",
                 "severity": severity,
                 "evidence": pred,
-                "blocking": True,
+                # Band "low" (confidence vừa phải) chỉ là gợi ý xem lại,
+                # không đủ mạnh để tự động đẩy ảnh lên needs_review.
+                "blocking": severity == "high",
             }
         )
 
-    # 3. Label không khớp bất kỳ prediction nào
+    # 3. Label không khớp bất kỳ prediction nào — chỉ buộc tội khi label đủ lớn
+    #    để detector lẽ ra phải thấy/cần khít; vật thể nhỏ thì "detector không
+    #    thấy" / "IoU thấp" là bằng chứng yếu, không đổ lỗi oan.
     for gt in unmatched_gt:
         if gt["label_id"] in redundant_unmatched_ids:
             continue  # đã giải thích bằng duplicate_label ở bước 0, không double-flag
+        area_fraction = _area_fraction(gt.get("bbox"), image_size)
         if gt["best_iou"] >= BBOX_MISALIGN_IOU_MIN:
+            if area_fraction is not None and area_fraction < BBOX_MISALIGN_MIN_AREA_FRACTION:
+                continue
             issues.append(
                 {
                     "label_id": gt["label_id"],
@@ -144,6 +209,8 @@ def flag_issues(
                 }
             )
         else:
+            if area_fraction is not None and area_fraction < EXTRA_LABEL_MIN_AREA_FRACTION:
+                continue
             issues.append(
                 {
                     "label_id": gt["label_id"],
@@ -165,4 +232,9 @@ async def flag_issues_node(state: LabelQAState) -> dict:
     unmatched_gt = state.get("unmatched_gt", [])
     unmatched_pred = state.get("unmatched_pred", [])
     gt_labels = state.get("gt_labels", [])
-    return {"flagged_issues": flag_issues(matches, unmatched_gt, unmatched_pred, gt_labels)}
+    label_scope = (state.get("metadata") or {}).get("label_scope") or {}
+    metrics = state.get("metrics") or {}
+    width = label_scope.get("image_width") or metrics.get("image_width")
+    height = label_scope.get("image_height") or metrics.get("image_height")
+    image_size = (width, height) if width and height else None
+    return {"flagged_issues": flag_issues(matches, unmatched_gt, unmatched_pred, gt_labels, image_size=image_size)}
